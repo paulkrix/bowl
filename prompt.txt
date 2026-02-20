@@ -4,9 +4,19 @@ Your job is to create a python program that will take a seriers of contour lines
 
 Algorithm:
 * Map the contour lines to equal distances along the profile line, leaving room for the "foot" ring of the bowl in the center. The contour lines may need to be scales to allow for this space in the middle. The exact details of this mapping will be up to you to work out.
-* Start with the inner-most contour line and iterate outwards, where the inner contour line is contour-0, the next is contour-1, etc.
-* For each contour line starting with contour-1, create a duplicate line that is offset by a defined distance (ridge-height) in the negative z direction. The original line will be contour-n-up and the new offset duplicate will be contour-n-down.
-* Create a surface that connects contour-n-down with contour-(n-1)-up.
-* Create a surface that connects contour-n-up with contour-n-down.
+* Start with the outer-most contour line and iterate inwards.
+* For each contour line, create a surface that is equivalent to taking the same 3d shape defined by the profile line and cutting it to only the area within the contour line is left, then scaling and offseting this shape so that it forms a thin extra layer on the bottom of the bowl. Image taking a piece of rubber, cutting it out in the shape of the contour line, then wrapping it around the bowl.
+* Do this again with the next contour line, but this layer will sit below/outside the previous layer.
+
+The contour lines are defined in the contours_fewer.svg file. These lines are svg paths with d strings.
+The bowl should be very shallow - around 24mm high and 120mm wide.
+
+Output should be STL
+The bowl mush be hollow and uniform with a smooth interior - no patterns.
+The foor ring should be 40mm in diameter, 4mm wide and 5mm deep.
+The contour steps / layers should be 1mm thick each.
+Don't reuse and of the other python scripts in this directory.
+Don't change the shape of the contour lines except to "wrap" them around the bowl shape. Their wavyness must be maintained.
+
 
 Before you do anything, please describe what you think I am asking you to do as well as ask me any questions that you need to know before you can begin.
