@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+Editable bowl profile reference (units in mm).
+The script reads these ids directly:
+  - outer_profile (closed path)
+  - interior_cavity_profile (closed path)
+  - contour_mapping_profile (open path)
+  - foot_ridge_profile (open polyline, optional)
+-->
+
+<svg
+   width="1320"
+   height="700"
+   viewBox="-10 -8 110 44"
+   version="1.1"
+   id="svg5"
+   sodipodi:docname="profile1.svg"
+   inkscape:version="1.3.2 (091e20e, 2023-11-25)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview5"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.73798038"
+     inkscape:cx="636.8733"
+     inkscape:cy="386.18913"
+     inkscape:window-width="1280"
+     inkscape:window-height="593"
+     inkscape:window-x="0"
+     inkscape:window-y="25"
+     inkscape:window-maximized="0"
+     inkscape:current-layer="model_space" />
+  <defs
+     id="defs1">
+    <style
+       id="style1">
+      .guide { stroke: #9aa0a6; stroke-width: 0.22; fill: none; stroke-dasharray: 0.9 0.9; vector-effect: non-scaling-stroke; }
+      .outer { stroke: #0b57d0; stroke-width: 0.55; fill: none; vector-effect: non-scaling-stroke; }
+      .inner { stroke: #0f9d58; stroke-width: 0.55; fill: none; vector-effect: non-scaling-stroke; }
+      .mapping { stroke: #c26401; stroke-width: 0.5; fill: none; stroke-dasharray: 1.4 1; vector-effect: non-scaling-stroke; }
+      .foot { stroke: #8e24aa; stroke-width: 0.45; fill: none; vector-effect: non-scaling-stroke; }
+      .label { font-size: 1.8px; fill: #444; font-family: ui-monospace, Menlo, monospace; }
+    </style>
+  </defs>
+  <!-- model space: +X right (radius), +Y up (height) -->
+  <g
+     id="model_space"
+     transform="translate(0 28) scale(1 -1)">
+    <line
+       class="guide"
+       x1="0"
+       y1="-7"
+       x2="0"
+       y2="30"
+       id="line1" />
+    <line
+       class="guide"
+       x1="-2"
+       y1="0"
+       x2="92"
+       y2="0"
+       id="line2" />
+    <line
+       class="guide"
+       x1="-2"
+       y1="24"
+       x2="92"
+       y2="24"
+       id="line3" />
+    <line
+       class="guide"
+       x1="85"
+       y1="-7"
+       x2="85"
+       y2="30"
+       id="line4" />
+    <!-- Optional foot ridge reference -->
+    <polyline
+       id="foot_ridge_profile"
+       class="foot"
+       points="26,0 26,-5 30,-5 30,0" />
+    <!-- Outer bowl profile (closed). Uses smooth cubic Beziers. -->
+    <path
+       id="outer_profile"
+       class="outer"
+       d="m 0,0 h 30 c 7.726387,1.2162872 13.785036,2.8107699 17.420199,3.6679704 9.761145,2.9554867 10.945042,3.4619518 18.827455,6.3597326 5.728387,3.126769 11.042247,5.66374 15.768633,9.101506 1.183714,1.444949 1.83203,2.224537 2.983713,3.537458 H 0 Z"
+       sodipodi:nodetypes="cccccccc" />
+    <!-- Interior cavity cut profile (closed). Also smooth Beziers. -->
+    <path
+       id="interior_cavity_profile"
+       class="inner"
+       d="M 0,3          C 14,3.1 24,4.0 33,5.6          C 45,8.2 56,12.4 67,16.8          C 74,19.9 79,22.8 82.3,26          L 0,26          Z" />
+    <!-- Layer mapping path (open): start near rim, end near foot -->
+    <path
+       id="contour_mapping_profile"
+       class="mapping"
+       d="M 77,23          C 74,18.5 71,13.5 67,9          C 60,5.8 53,4.6 46,4.5          C 43,3.3 40,2.2 36,0.8" />
+  </g>
+  <text
+     class="label"
+     x="2"
+     y="3"
+     id="text4">Editable Profile Curves (mm)</text>
+  <text
+     class="label"
+     x="2"
+     y="6"
+     id="text5">Blue: outer_profile, Green: interior_cavity_profile, Orange: contour_mapping_profile, Purple: foot_ridge_profile</text>
+</svg>
