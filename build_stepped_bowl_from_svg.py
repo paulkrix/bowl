@@ -30,7 +30,7 @@ class BowlConfig:
     foot_diameter: float = 60.0
     foot_ring_width: float = 4.0
     foot_depth: float = 5.0
-    step_thickness: float = 2.0
+    step_thickness: float = 1.5
     rim_clearance: float = 0.6
     pattern_inner_clearance: float = 0.4
     mask_z_min: float = -80.0
