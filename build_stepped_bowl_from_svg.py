@@ -23,9 +23,9 @@ ALLOWED_COMMANDS = set("MmLlHhVvZz")
 
 @dataclass(frozen=True)
 class BowlConfig:
-    bowl_diameter: float = 120.0
+    bowl_diameter: float = 170.0
     bowl_height: float = 24.0
-    wall_thickness: float = 4.0
+    wall_thickness: float = 3.0
     foot_diameter: float = 40.0
     foot_ring_width: float = 4.0
     foot_depth: float = 5.0
@@ -260,12 +260,9 @@ def equal_distance_target_radii(count: int, profile: Sequence[Point2D]) -> List[
 def build_outer_bowl(cfg: BowlConfig) -> cq.Workplane:
     rim = cfg.rim_radius
     foot_outer = cfg.foot_outer_radius
-    foot_inner = cfg.foot_inner_radius
 
     profile_points = [
-        (0.0, cfg.foot_depth),
-        (foot_inner, cfg.foot_depth),
-        (foot_inner, 0.0),
+        (0.0, 0.0),
         (foot_outer, 0.0),
         (foot_outer + cfg.foot_ring_width, 0.6),
         (foot_outer + 10.0, 1.8),
@@ -278,6 +275,37 @@ def build_outer_bowl(cfg: BowlConfig) -> cq.Workplane:
 
     profile = cq.Workplane("XZ").polyline(profile_points).close()
     return profile.revolve(360.0)
+
+
+def build_foot_ridge(cfg: BowlConfig) -> cq.Shape:
+    """Annular ridge protruding downward from the bowl base."""
+    ridge = (
+        cq.Workplane("XY")
+        .circle(cfg.foot_outer_radius)
+        .circle(cfg.foot_inner_radius)
+        .extrude(-cfg.foot_depth)
+    )
+    return ridge.val()
+
+
+def build_interior_cavity(cfg: BowlConfig) -> cq.Shape:
+    """Build a smooth interior cavity to guarantee a clean inside surface."""
+    rim_inner = cfg.rim_radius - cfg.wall_thickness + 0.3
+    floor_z = cfg.wall_thickness
+    top_z = cfg.bowl_height + 2.0
+
+    cavity_points = [
+        (0.0, floor_z),
+        (18.0, floor_z + 0.5),
+        (30.0, floor_z + 2.2),
+        (42.0, floor_z + 6.2),
+        (52.0, floor_z + 10.8),
+        (rim_inner, top_z),
+        (0.0, top_z),
+    ]
+
+    cavity = cq.Workplane("XZ").polyline(cavity_points).close().revolve(360.0)
+    return cavity.val()
 
 
 def make_contour_mask(points: Sequence[Point2D], cfg: BowlConfig) -> cq.Shape:
@@ -370,15 +398,11 @@ def build_stepped_bowl(svg_path: Path, cfg: BowlConfig) -> cq.Workplane:
     centered_contours, _ = center_contours(contours)
 
     outer = build_outer_bowl(cfg)
-    outer_shape = outer.val()
-    hollow_shape = outer.faces(">Z").shell(-cfg.wall_thickness).val()
-    inner_void = outer_shape.cut(hollow_shape)
+    outer_shape = outer.val().fuse(build_foot_ridge(cfg))
     decoration = build_step_decoration(outer_shape, centered_contours, cfg)
-    if decoration is None:
-        final_shape = hollow_shape
-    else:
-        decorated_outer = outer_shape.fuse(decoration)
-        final_shape = decorated_outer.cut(inner_void)
+    decorated_outer = outer_shape if decoration is None else outer_shape.fuse(decoration)
+    interior_cavity = build_interior_cavity(cfg)
+    final_shape = decorated_outer.cut(interior_cavity)
     return cq.Workplane("XY").newObject([final_shape])
 
 
