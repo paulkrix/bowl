@@ -6,6 +6,11 @@ The cup surface is defined by revolving a profile polyline in the YZ plane
 around the Z axis. The script writes an OBJ containing:
 1) a triangulated cup outer surface mesh
 2) mapped contour lines as either OBJ lines and/or raised ribbon geometry
+
+Ridge generation uses connected tapering rings:
+- each contour loop becomes a ridge centerline ring
+- ridge edges are midpoint boundaries between neighboring rings
+- the outer edge of one ridge matches the inner edge of the next ridge
 """
 
 from __future__ import annotations
@@ -18,12 +23,11 @@ import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 
 Point2 = Tuple[float, float]
 Point3 = Tuple[float, float, float]
-Segment2 = Tuple[float, float, float, float, float, float, float, float]
 
 
 @dataclass
@@ -43,15 +47,6 @@ class SvgPolyline:
     points: List[Point2]
     stroked: bool
     filled: bool
-
-
-@dataclass
-class DipPolygon:
-    points: List[Point2]
-    min_x: float
-    min_y: float
-    max_x: float
-    max_y: float
 
 
 def parse_number(text: Optional[str]) -> Optional[float]:
@@ -643,26 +638,6 @@ def close_polyline_for_polygon(poly: Sequence[Point2], eps: float = 1e-9) -> Lis
     return out
 
 
-def make_dip_polygons(local_contours: Sequence[Sequence[Point2]]) -> List[DipPolygon]:
-    polygons: List[DipPolygon] = []
-    for poly in local_contours:
-        closed = close_polyline_for_polygon(poly)
-        if len(closed) < 4:
-            continue
-        xs = [p[0] for p in closed]
-        ys = [p[1] for p in closed]
-        polygons.append(
-            DipPolygon(
-                points=closed,
-                min_x=min(xs),
-                min_y=min(ys),
-                max_x=max(xs),
-                max_y=max(ys),
-            )
-        )
-    return polygons
-
-
 def point_in_polygon_xy(x: float, y: float, poly: Sequence[Point2]) -> bool:
     inside = False
     n = len(poly)
@@ -678,77 +653,215 @@ def point_in_polygon_xy(x: float, y: float, poly: Sequence[Point2]) -> bool:
     return inside
 
 
-def count_dip_layers_at_point(x: float, y: float, polygons: Sequence[DipPolygon]) -> int:
-    count = 0
-    for poly in polygons:
-        if x < poly.min_x or x > poly.max_x or y < poly.min_y or y > poly.max_y:
+def chaikin_closed(poly: Sequence[Point2], passes: int) -> List[Point2]:
+    if passes <= 0:
+        return list(poly)
+    closed = close_polyline_for_polygon(poly)
+    if len(closed) < 4:
+        return []
+    core = closed[:-1]
+    for _ in range(passes):
+        nxt: List[Point2] = []
+        n = len(core)
+        for i in range(n):
+            p0 = core[i]
+            p1 = core[(i + 1) % n]
+            q = (0.75 * p0[0] + 0.25 * p1[0], 0.75 * p0[1] + 0.25 * p1[1])
+            r = (0.25 * p0[0] + 0.75 * p1[0], 0.25 * p0[1] + 0.75 * p1[1])
+            nxt.append(q)
+            nxt.append(r)
+        core = nxt
+    out = core + [core[0]]
+    return dedupe_consecutive(out)
+
+
+def resample_closed_loop(poly: Sequence[Point2], samples: int) -> List[Point2]:
+    closed = close_polyline_for_polygon(poly)
+    if len(closed) < 4:
+        return []
+    core = closed[:-1]
+    seq = core + [core[0]]
+    samples = max(8, samples)
+    out = resample_polyline(seq, samples + 1)
+    if out[-1] != out[0]:
+        out.append(out[0])
+    return dedupe_consecutive(out)
+
+
+def ray_segment_intersection_radius(theta: float, a: Point2, b: Point2, eps: float = 1e-12) -> Optional[float]:
+    dx = math.cos(theta)
+    dy = math.sin(theta)
+    vx = b[0] - a[0]
+    vy = b[1] - a[1]
+    den = dx * vy - dy * vx
+    if abs(den) <= eps:
+        return None
+    u = (a[0] * dy - a[1] * dx) / den
+    if u < -eps or u > 1.0 + eps:
+        return None
+    px = a[0] + u * vx
+    py = a[1] + u * vy
+    t = px * dx + py * dy
+    if t <= eps:
+        return None
+    return t
+
+
+def fill_missing_circular(values: Sequence[Optional[float]]) -> Optional[List[float]]:
+    n = len(values)
+    valid = [i for i, v in enumerate(values) if v is not None]
+    if not valid:
+        return None
+    if len(valid) == 1:
+        v = float(values[valid[0]])  # type: ignore[arg-type]
+        return [v] * n
+    out = [0.0] * n
+    ext = valid + [valid[0] + n]
+    for a, b in zip(ext, ext[1:]):
+        va = float(values[a % n])  # type: ignore[arg-type]
+        vb = float(values[b % n])  # type: ignore[arg-type]
+        span = b - a
+        for k in range(span + 1):
+            i = (a + k) % n
+            t = (k / span) if span > 0 else 0.0
+            out[i] = va * (1.0 - t) + vb * t
+    return out
+
+
+def sample_ring_rho_by_theta(poly: Sequence[Point2], sample_count: int) -> Optional[List[float]]:
+    closed = close_polyline_for_polygon(poly)
+    if len(closed) < 4:
+        return None
+    n = max(8, sample_count)
+    sampled: List[Optional[float]] = [None] * n
+    for j in range(n):
+        theta = (2.0 * math.pi * j) / n
+        nearest: Optional[float] = None
+        for a, b in zip(closed, closed[1:]):
+            t = ray_segment_intersection_radius(theta, a, b)
+            if t is None:
+                continue
+            if nearest is None or t < nearest:
+                nearest = t
+        sampled[j] = nearest
+    return fill_missing_circular(sampled)
+
+
+def interp_ring_rho_at_theta(rho_samples: Sequence[float], theta: float) -> float:
+    n = len(rho_samples)
+    if n == 0:
+        return 0.0
+    if n == 1:
+        return rho_samples[0]
+    two_pi = 2.0 * math.pi
+    t = theta % two_pi
+    u = t * (n / two_pi)
+    i0 = int(math.floor(u)) % n
+    i1 = (i0 + 1) % n
+    f = u - math.floor(u)
+    return rho_samples[i0] * (1.0 - f) + rho_samples[i1] * f
+
+
+def ridge_height_connected_rings(rho: float, centers_desc: Sequence[float], peak_height: float, sharpness: float) -> float:
+    if peak_height <= 0.0:
+        return 0.0
+    centers = sorted((c for c in centers_desc if c > 0.0), reverse=True)
+    n = len(centers)
+    if n == 0:
+        return 0.0
+    sharp = max(0.5, sharpness)
+
+    if n == 1:
+        half = max(1e-6, 0.25 * centers[0])
+        left = centers[0] + half
+        right = max(0.0, centers[0] - half)
+        if rho > left or rho < right:
+            return 0.0
+        if rho >= centers[0]:
+            u = (left - rho) / max(1e-12, left - centers[0])
+        else:
+            u = (rho - right) / max(1e-12, centers[0] - right)
+        return peak_height * (max(0.0, min(1.0, u)) ** sharp)
+
+    mids = [0.5 * (centers[k] + centers[k + 1]) for k in range(n - 1)]
+    outer_gap = max(1e-6, centers[0] - centers[1])
+    inner_gap = max(1e-6, centers[-2] - centers[-1])
+    outer_edge = centers[0] + 0.5 * outer_gap
+    inner_edge = max(0.0, centers[-1] - 0.5 * inner_gap)
+
+    best = 0.0
+    for k in range(n):
+        left = outer_edge if k == 0 else mids[k - 1]
+        right = inner_edge if k == (n - 1) else mids[k]
+        c = centers[k]
+        if left <= c or c <= right:
             continue
-        if point_in_polygon_xy(x, y, poly.points):
-            count += 1
-    return count
+        if rho > left or rho < right:
+            continue
+        if rho >= c:
+            u = (left - rho) / (left - c)
+        else:
+            u = (rho - right) / (c - right)
+        h = peak_height * (max(0.0, min(1.0, u)) ** sharp)
+        if h > best:
+            best = h
+    return best
 
 
-def build_contour_segments(local_contours: Sequence[Sequence[Point2]]) -> List[Segment2]:
-    segments: List[Segment2] = []
+def build_ring_field(
+    local_contours: Sequence[Sequence[Point2]],
+    theta_segments: int,
+    loop_resample: int,
+    theta_max_mult: float,
+    require_origin_inside: bool,
+) -> Tuple[List[List[Point2]], List[List[float]], float]:
+    loops: List[List[Point2]] = []
+    ring_samples: List[List[float]] = []
+    mean_radii: List[float] = []
+
     for poly in local_contours:
-        for (ax, ay), (bx, by) in zip(poly, poly[1:]):
-            min_x = min(ax, bx)
-            max_x = max(ax, bx)
-            min_y = min(ay, by)
-            max_y = max(ay, by)
-            segments.append((ax, ay, bx, by, min_x, max_x, min_y, max_y))
-    return segments
+        closed = close_polyline_for_polygon(poly)
+        if len(closed) < 4:
+            continue
+        if require_origin_inside and not point_in_polygon_xy(0.0, 0.0, closed):
+            continue
+        sample_count = loop_resample if loop_resample > 0 else max(64, 4 * theta_segments)
+        loop = resample_closed_loop(closed, sample_count)
+        if len(loop) < 4:
+            continue
+        loops.append(loop)
+        mean_r = sum(math.hypot(x, y) for x, y in loop[:-1]) / max(1, (len(loop) - 1))
+        mean_radii.append(max(1e-9, mean_r))
+
+    if not loops:
+        return [], [], 0.0
+
+    sorted_r = sorted(mean_radii)
+    ref_r = sorted_r[len(sorted_r) // 2]
+    max_mult = max(1.0, theta_max_mult)
+    max_samples = int(max(theta_segments, math.ceil(theta_segments * max_mult)))
+
+    kept_loops: List[List[Point2]] = []
+    for loop, mean_r in zip(loops, mean_radii):
+        adaptive = int(math.ceil(theta_segments * max(1.0, mean_r / ref_r)))
+        adaptive = max(theta_segments, min(max_samples, adaptive))
+        rho = sample_ring_rho_by_theta(loop, adaptive)
+        if rho is None:
+            continue
+        kept_loops.append(loop)
+        ring_samples.append(rho)
+
+    if not ring_samples:
+        return [], [], 0.0
+
+    order = sorted(range(len(ring_samples)), key=lambda idx: sum(ring_samples[idx]) / len(ring_samples[idx]), reverse=True)
+    loops = [kept_loops[i] for i in order]
+    ring_samples = [ring_samples[i] for i in order]
+    rho_max = max(max(r) for r in ring_samples)
+    return loops, ring_samples, rho_max
 
 
-def point_to_segment_distance(x: float, y: float, seg: Segment2) -> float:
-    ax, ay, bx, by, _, _, _, _ = seg
-    vx = bx - ax
-    vy = by - ay
-    wx = x - ax
-    wy = y - ay
-    vv = vx * vx + vy * vy
-    if vv <= 1e-18:
-        return math.hypot(x - ax, y - ay)
-    t = (wx * vx + wy * vy) / vv
-    t = max(0.0, min(1.0, t))
-    qx = ax + t * vx
-    qy = ay + t * vy
-    return math.hypot(x - qx, y - qy)
-
-
-def smooth_falloff01(u: float) -> float:
-    u = max(0.0, min(1.0, u))
-    # 1 - smoothstep(0,1,u): C1 at both peak and taper edge.
-    s = u * u * (3.0 - 2.0 * u)
-    return 1.0 - s
-
-
-def build_segment_spatial_index(
-    segments: Sequence[Segment2], query_radius: float
-) -> Tuple[float, Dict[Tuple[int, int], List[int]]]:
-    cell_size = max(1e-9, query_radius)
-    grid: Dict[Tuple[int, int], List[int]] = {}
-    for idx, seg in enumerate(segments):
-        _, _, _, _, min_x, max_x, min_y, max_y = seg
-        min_x -= query_radius
-        max_x += query_radius
-        min_y -= query_radius
-        max_y += query_radius
-        ix0 = math.floor(min_x / cell_size)
-        ix1 = math.floor(max_x / cell_size)
-        iy0 = math.floor(min_y / cell_size)
-        iy1 = math.floor(max_y / cell_size)
-        for ix in range(ix0, ix1 + 1):
-            for iy in range(iy0, iy1 + 1):
-                key = (ix, iy)
-                if key not in grid:
-                    grid[key] = [idx]
-                else:
-                    grid[key].append(idx)
-    return cell_size, grid
-
-
-def apply_dip_layers_to_surface(
+def apply_ring_layers_to_surface(
     surface_vertices: Sequence[Point3],
     profile_rz: Sequence[Point2],
     theta_segments: int,
@@ -759,18 +872,16 @@ def apply_dip_layers_to_surface(
     base_gap_frac: float,
     top_gap_frac: float,
     height_exponent: float,
-    contour_segments: Sequence[Segment2],
-    dip_layer_thickness: float,
-    dip_taper_width: float,
+    ring_rho_samples: Sequence[Sequence[float]],
+    ring_height: float,
+    ridge_sharpness: float,
 ) -> List[Point3]:
-    if dip_layer_thickness <= 0.0 or dip_taper_width <= 0.0 or not contour_segments:
+    if ring_height <= 0.0 or not ring_rho_samples:
         return list(surface_vertices)
 
     s_max = profile_s[-1] if profile_s else 0.0
     area_profile = build_area_cumulative(profile_s, profile_r) if mapping == "area" else None
-    taper_inv = 1.0 / dip_taper_width
-    cell_size, seg_grid = build_segment_spatial_index(contour_segments, dip_taper_width)
-    dipped: List[Point3] = []
+    out: List[Point3] = []
     n_meridian = len(profile_rz)
 
     for i in range(n_meridian):
@@ -790,41 +901,23 @@ def apply_dip_layers_to_surface(
             idx = i * theta_segments + j
             x, y, z = surface_vertices[idx]
             theta = (2.0 * math.pi * j) / theta_segments
-            x2 = rho * math.cos(theta)
-            y2 = rho * math.sin(theta)
-            max_thickness = 0.0
-            cell = (math.floor(x2 / cell_size), math.floor(y2 / cell_size))
-            for seg_idx in seg_grid.get(cell, []):
-                seg = contour_segments[seg_idx]
-                _, _, _, _, min_x, max_x, min_y, max_y = seg
-                if (
-                    x2 < (min_x - dip_taper_width)
-                    or x2 > (max_x + dip_taper_width)
-                    or y2 < (min_y - dip_taper_width)
-                    or y2 > (max_y + dip_taper_width)
-                ):
-                    continue
-                dist = point_to_segment_distance(x2, y2, seg)
-                if dist >= dip_taper_width:
-                    continue
-                thickness = dip_layer_thickness * smooth_falloff01(dist * taper_inv)
-                if thickness > max_thickness:
-                    max_thickness = thickness
-                    if max_thickness >= dip_layer_thickness:
-                        break
-
-            if max_thickness <= 0.0:
-                dipped.append((x, y, z))
+            centers = [interp_ring_rho_at_theta(ring, theta) for ring in ring_rho_samples if ring]
+            h = ridge_height_connected_rings(
+                rho=rho,
+                centers_desc=centers,
+                peak_height=ring_height,
+                sharpness=ridge_sharpness,
+            )
+            if h <= 0.0:
+                out.append((x, y, z))
                 continue
             r = math.hypot(x, y)
             if r <= 1e-12:
-                dipped.append((x, y, z + max_thickness))
+                out.append((x, y, z + h))
                 continue
-            r2 = r + max_thickness
-            scale = r2 / r
-            dipped.append((x * scale, y * scale, z))
-
-    return dipped
+            scale = (r + h) / r
+            out.append((x * scale, y * scale, z))
+    return out
 
 
 def make_surface_mesh(profile_rz: Sequence[Point2], theta_segments: int) -> Tuple[List[Point3], List[Tuple[int, int, int]]]:
@@ -929,6 +1022,50 @@ def map_contours_to_surface(
     return mapped
 
 
+def map_local_contours_to_surface(
+    local_contours: Sequence[Sequence[Point2]],
+    rho_max: float,
+    profile_s: Sequence[float],
+    profile_r: Sequence[float],
+    profile_z: Sequence[float],
+    mapping: str,
+    base_gap_frac: float,
+    top_gap_frac: float,
+    height_exponent: float,
+) -> List[List[Point3]]:
+    s_max = profile_s[-1] if profile_s else 0.0
+    area_profile = build_area_cumulative(profile_s, profile_r) if mapping == "area" else None
+    mapped: List[List[Point3]] = []
+
+    for poly in local_contours:
+        out: List[Point3] = []
+        prev_theta = 0.0
+        for x, y in poly:
+            rho = math.hypot(x, y)
+            if rho <= 1e-12:
+                theta = prev_theta
+            else:
+                theta = math.atan2(y, x)
+                prev_theta = theta
+            s = map_rho_to_s(
+                rho,
+                rho_max,
+                s_max,
+                mapping,
+                profile_s,
+                area_profile,
+                base_gap_frac=base_gap_frac,
+                top_gap_frac=top_gap_frac,
+                height_exponent=height_exponent,
+            )
+            r = interp_1d(profile_s, profile_r, s)
+            z = interp_1d(profile_s, profile_z, s)
+            out.append((r * math.cos(theta), r * math.sin(theta), z))
+        if len(out) >= 2:
+            mapped.append(out)
+    return mapped
+
+
 def build_contour_ribbons(
     contour_lines: Sequence[Sequence[Point3]],
     width: float,
@@ -1006,7 +1143,7 @@ def write_obj(
     contour_lift: float,
 ) -> None:
     with output_path.open("w", encoding="utf-8", newline="\n") as f:
-        f.write("# Generated by map_contours_to_cup.py\n")
+        f.write("# Generated by map_contours_to_cup_rings.py\n")
         f.write("g cup_surface\n")
         for x, y, z in surface_vertices:
             f.write(f"v {x:.6f} {y:.6f} {z:.6f}\n")
@@ -1049,7 +1186,7 @@ def parse_center_arg(value: Optional[str], fallback: Point2) -> Point2:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Map contour SVG polylines onto a cup surface generated by revolving a profile SVG polyline."
+        description="Map contour SVG polylines onto a revolved cup using connected tapering ring ridges."
     )
     parser.add_argument("--contours", required=True, type=Path, help="Input contours SVG file.")
     parser.add_argument("--profile", required=True, type=Path, help="Input cup profile SVG file.")
@@ -1098,7 +1235,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument(
         "--theta-segments",
         type=int,
-        default=128,
+        default=256,
         help="Angular segments for revolved mesh.",
     )
     parser.add_argument(
@@ -1108,22 +1245,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="Drop contour polylines shorter than this SVG-unit length.",
     )
     parser.add_argument(
-        "--contour-smooth-iterations",
-        type=int,
-        default=2,
-        help="Centerline fairing passes (Catmull-Rom + Taubin smoothing, 0 disables).",
-    )
-    parser.add_argument(
-        "--contour-smooth-strength",
-        type=float,
-        default=0.5,
-        help="Blend [0..1] per smoothing pass for contour polylines.",
-    )
-    parser.add_argument(
         "--contour-render",
         choices=("ribbon", "lines", "both", "none"),
-        default="ribbon",
-        help="How to export mapped contours (default: ribbon).",
+        default="none",
+        help="How to export mapped ring centerlines (default: none).",
     )
     parser.add_argument(
         "--contour-width",
@@ -1162,23 +1287,42 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="Blend [0..1] from arclength mapping (0) to vertical-height mapping (1) to reduce spacing on steeper profile regions.",
     )
     parser.add_argument(
+        "--ring-height",
         "--dip-layer-thickness",
+        dest="ring_height",
         type=float,
-        default=0.0,
-        help="Peak thickness at each contour centerline (model units).",
+        default=0.6,
+        help="Peak ridge height at each contour centerline (model units).",
     )
     parser.add_argument(
-        "--dip-taper-width",
+        "--ridge-sharpness",
         type=float,
-        default=0.0,
-        help="Distance from contour centerline where dip thickness tapers to zero (model units, <=0 means auto).",
+        default=1.0,
+        help="Ridge profile exponent (>=0.5). Higher makes narrower peaks.",
+    )
+    parser.add_argument(
+        "--ring-resample",
+        type=int,
+        default=0,
+        help="Closed-loop polyline resample count (<=0 means auto).",
+    )
+    parser.add_argument(
+        "--ring-theta-max-mult",
+        type=float,
+        default=6.0,
+        help="Max adaptive multiplier for per-ring angular sampling relative to --theta-segments.",
+    )
+    parser.add_argument(
+        "--require-origin-inside",
+        action="store_true",
+        help="Only keep contour loops that enclose the contour-space origin.",
     )
     args = parser.parse_args(argv)
     args.base_gap_frac = max(0.0, min(0.95, args.base_gap_frac))
     args.top_gap_frac = max(0.0, min(0.95, args.top_gap_frac))
     args.steepness_compensation = max(0.0, min(1.0, args.steepness_compensation))
-    args.contour_smooth_iterations = max(0, args.contour_smooth_iterations)
-    args.contour_smooth_strength = max(0.0, min(1.0, args.contour_smooth_strength))
+    args.ring_theta_max_mult = max(1.0, args.ring_theta_max_mult)
+    args.ridge_sharpness = max(0.5, args.ridge_sharpness)
     if args.base_gap_frac + args.top_gap_frac >= 0.98:
         raise ValueError("--base-gap-frac + --top-gap-frac must be < 0.98.")
     if args.height_exponent <= 0.0:
@@ -1189,13 +1333,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     contour_center = parse_center_arg(args.contour_center, contour_canvas.center)
     contour_polys = choose_contour_polylines(contour_items, args.min_contour_length)
-    contour_polys = smooth_contour_polylines(
-        contour_polys,
-        iterations=args.contour_smooth_iterations,
-        strength=args.contour_smooth_strength,
+    local_contours, _ = contour_polys_to_local(contour_polys, contour_center, args.contour_scale)
+    ring_loops, ring_rho_samples, rho_max = build_ring_field(
+        local_contours=local_contours,
+        theta_segments=args.theta_segments,
+        loop_resample=args.ring_resample,
+        theta_max_mult=args.ring_theta_max_mult,
+        require_origin_inside=args.require_origin_inside,
     )
-    local_contours, rho_max = contour_polys_to_local(contour_polys, contour_center, args.contour_scale)
-    contour_segments = build_contour_segments(local_contours)
+    if not ring_rho_samples:
+        raise ValueError("No valid closed ring contours after preprocessing.")
     profile_poly = choose_profile_polyline(profile_items, args.profile_index)
 
     profile_rz = build_profile_rz(
@@ -1210,10 +1357,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     profile_z = [p[1] for p in profile_rz]
 
     surface_vertices, faces = make_surface_mesh(profile_rz, args.theta_segments)
-    if args.dip_layer_thickness > 0.0:
-        if args.dip_taper_width <= 0.0:
-            args.dip_taper_width = max(1e-6, 4.0 * args.dip_layer_thickness)
-        surface_vertices = apply_dip_layers_to_surface(
+    if args.ring_height > 0.0:
+        surface_vertices = apply_ring_layers_to_surface(
             surface_vertices,
             profile_rz=profile_rz,
             theta_segments=args.theta_segments,
@@ -1224,25 +1369,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             base_gap_frac=args.base_gap_frac,
             top_gap_frac=args.top_gap_frac,
             height_exponent=args.height_exponent,
-            contour_segments=contour_segments,
-            dip_layer_thickness=args.dip_layer_thickness,
-            dip_taper_width=args.dip_taper_width,
+            ring_rho_samples=ring_rho_samples,
+            ring_height=args.ring_height,
+            ridge_sharpness=args.ridge_sharpness,
         )
-    mapped_lines = map_contours_to_surface(
-        contour_polys,
-        contour_center=contour_center,
-        contour_scale=args.contour_scale,
-        profile_s=profile_s,
-        profile_r=profile_r,
-        profile_z=profile_z,
-        mapping=args.mapping,
-        base_gap_frac=args.base_gap_frac,
-        top_gap_frac=args.top_gap_frac,
-        height_exponent=args.height_exponent,
-    )
-
-    if not mapped_lines:
-        raise ValueError("No mapped contour lines were produced.")
+    mapped_lines: List[List[Point3]] = []
+    if args.contour_render != "none":
+        mapped_lines = map_local_contours_to_surface(
+            ring_loops,
+            rho_max=rho_max,
+            profile_s=profile_s,
+            profile_r=profile_r,
+            profile_z=profile_z,
+            mapping=args.mapping,
+            base_gap_frac=args.base_gap_frac,
+            top_gap_frac=args.top_gap_frac,
+            height_exponent=args.height_exponent,
+        )
 
     model_radius = max(profile_r) if profile_r else 1.0
     contour_width = args.contour_width if args.contour_width > 0.0 else max(1e-4, 0.01 * model_radius)
@@ -1263,16 +1406,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"Profile canvas center (unused unless needed): {profile_canvas.center}")
     print(f"Surface vertices: {len(surface_vertices)}")
     print(f"Surface faces: {len(faces)}")
+    print(f"Ring loops used: {len(ring_loops)}")
     print(f"Mapped contour lines: {len(mapped_lines)}")
     print(f"Base gap fraction: {args.base_gap_frac}")
     print(f"Top gap fraction: {args.top_gap_frac}")
     print(f"Height exponent: {args.height_exponent}")
     print(f"Steepness compensation: {args.steepness_compensation}")
-    print(f"Contour smooth iterations: {args.contour_smooth_iterations}")
-    print(f"Contour smooth strength: {args.contour_smooth_strength}")
-    print(f"Dip contour segments: {len(contour_segments)}")
-    print(f"Dip layer thickness: {args.dip_layer_thickness}")
-    print(f"Dip taper width: {args.dip_taper_width}")
+    print(f"Ring height: {args.ring_height}")
+    print(f"Ridge sharpness: {args.ridge_sharpness}")
+    print(f"Ring theta max multiplier: {args.ring_theta_max_mult}")
     print(f"Contour render mode: {args.contour_render}")
     if args.contour_render in ("ribbon", "both"):
         print(f"Contour ribbon width: {contour_width}")

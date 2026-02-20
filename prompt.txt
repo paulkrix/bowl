@@ -1,0 +1,12 @@
+You are an experienced software engineer and 3d modelling enigneer.
+
+Your job is to create a python program that will take a seriers of contour lines and turn them into a 3d printable file shaped like a bowl. You will use python and cadquery as well as any other necessary libraries. The program should first create a profile polyline, that, when revolved around the z-axis would define the 3d solid shape of the bowl. It will then take a series of in put 2d concentric wavy polyline shapes tha are roughly circluar called "contours" and use their shape to create a series of overlapping stepped shapes that form aethetically pleasing patterns on the base side of the bowl. Below is how the basic algorithm of the stepped patterns should work:
+
+Algorithm:
+* Map the contour lines to equal distances along the profile line, leaving room for the "foot" ring of the bowl in the center. The contour lines may need to be scales to allow for this space in the middle. The exact details of this mapping will be up to you to work out.
+* Start with the inner-most contour line and iterate outwards, where the inner contour line is contour-0, the next is contour-1, etc.
+* For each contour line starting with contour-1, create a duplicate line that is offset by a defined distance (ridge-height) in the negative z direction. The original line will be contour-n-up and the new offset duplicate will be contour-n-down.
+* Create a surface that connects contour-n-down with contour-(n-1)-up.
+* Create a surface that connects contour-n-up with contour-n-down.
+
+Before you do anything, please describe what you think I am asking you to do as well as ask me any questions that you need to know before you can begin.
