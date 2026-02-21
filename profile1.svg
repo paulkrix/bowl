@@ -29,13 +29,13 @@ The script reads these ids directly:
      inkscape:pageopacity="0.0"
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="0.73798038"
-     inkscape:cx="531.17943"
-     inkscape:cy="340.11744"
+     inkscape:zoom="1.0436619"
+     inkscape:cx="526.51153"
+     inkscape:cy="216.54523"
      inkscape:window-width="1981"
      inkscape:window-height="934"
-     inkscape:window-x="0"
-     inkscape:window-y="232"
+     inkscape:window-x="112"
+     inkscape:window-y="246"
      inkscape:window-maximized="0"
      inkscape:current-layer="model_space" />
   <defs
@@ -97,7 +97,7 @@ The script reads these ids directly:
     <path
        id="interior_cavity_profile"
        class="inner"
-       d="m -0.2258416,1.306188 c 13.9999996,0.1 23.5483166,-0.1292079 32.6612376,0.5674257 12.451683,1.1320296 24.016287,3.5252968 35.016287,7.9252969 7,3.1000004 12.338763,5.8870794 15.3,8.4095544 H 0.45168319 Z"
+       d="M 0,3.6867866 C 13.99308,3.7980358 23.536677,3.5430439 32.645094,4.3180428 45.090623,5.577416 56.64951,8.2399052 67.644073,13.134868 c 6.996541,3.448723 12.332665,6.549325 15.292438,9.355557 H 0 Z"
        sodipodi:nodetypes="cccccc" />
     <!-- Layer mapping path (open): start near rim, end near foot -->
     <path

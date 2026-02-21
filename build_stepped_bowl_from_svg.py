@@ -31,8 +31,8 @@ class BowlConfig:
     foot_ring_width: float = 4.0
     foot_depth: float = 5.0
     step_thickness: float = 1.5
-    rim_clearance: float = 0.6
-    pattern_inner_clearance: float = 0.4
+    rim_clearance: float = 5.0
+    pattern_inner_clearance: float = 0.05
     mask_z_min: float = -80.0
     mask_z_max: float = 80.0
 
@@ -509,14 +509,33 @@ def load_profile_geometry(profile_svg: Path, cfg: BowlConfig, curve_segments: in
     )
 
 
-def equal_distance_target_radii(count: int, profile: Sequence[Point2D]) -> List[float]:
+def equal_distance_target_radii(
+    count: int,
+    profile: Sequence[Point2D],
+    span_fraction: float = 1.0,
+    span_anchor: str = "center",
+) -> List[float]:
     if count <= 0:
         return []
+    if not (0.0 < span_fraction <= 1.0):
+        raise ValueError("Mapping span must be in the range (0, 1].")
+    if span_anchor not in ("rim", "mid-rim", "center"):
+        raise ValueError("Mapping span anchor must be 'rim', 'mid-rim', or 'center'.")
     if count == 1:
         return [profile[0][0]]
     total = polyline_arc_lengths(profile)[-1]
+    span_total = total * span_fraction
+    if span_anchor == "rim":
+        span_start = 0.0
+    elif span_anchor == "center":
+        span_start = total - span_total
+    else:
+        span_start = 0.5 * (total - span_total)
     return [
-        interpolate_along_polyline(profile, (i / (count - 1)) * total)[0]
+        interpolate_along_polyline(
+            profile,
+            span_start + (i / (count - 1)) * span_total,
+        )[0]
         for i in range(count)
     ]
 
@@ -605,7 +624,7 @@ def compute_global_wave_scale(
     target_radii: Sequence[float],
     cfg: BowlConfig,
 ) -> float:
-    rim_limit = cfg.rim_radius - 0.2
+    rim_limit = cfg.rim_radius - cfg.rim_clearance
     inner_limit = cfg.foot_outer_radius + cfg.foot_ring_width + cfg.pattern_inner_clearance
     scale_limit = math.inf
 
@@ -640,9 +659,16 @@ def build_step_decoration(
     contours_inner_to_outer: Sequence[Sequence[Point2D]],
     mapping_profile: Sequence[Point2D],
     cfg: BowlConfig,
+    mapping_span: float = 1.0,
+    mapping_span_anchor: str = "center",
 ) -> cq.Shape | None:
     contours_outer_to_inner = list(reversed(contours_inner_to_outer))
-    target_radii = equal_distance_target_radii(len(contours_outer_to_inner), ensure_open(mapping_profile))
+    target_radii = equal_distance_target_radii(
+        len(contours_outer_to_inner),
+        ensure_open(mapping_profile),
+        span_fraction=mapping_span,
+        span_anchor=mapping_span_anchor,
+    )
     wave_scale = compute_global_wave_scale(contours_outer_to_inner, target_radii, cfg)
 
     decoration: cq.Shape | None = None
@@ -669,6 +695,8 @@ def build_stepped_bowl(
     profile_svg: Path = Path("profile.svg"),
     curve_segments: int = 24,
     contour_layers: int | None = None,
+    mapping_span: float = 1.0,
+    mapping_span_anchor: str = "center",
 ) -> cq.Workplane:
     contours = load_contours_from_svg(svg_path)
     centered_contours, _ = center_contours(contours)
@@ -682,6 +710,8 @@ def build_stepped_bowl(
         selected_contours,
         profiles.contour_mapping_profile,
         cfg,
+        mapping_span=mapping_span,
+        mapping_span_anchor=mapping_span_anchor,
     )
     decorated_outer = outer_shape if decoration is None else outer_shape.fuse(decoration)
     interior_cavity = build_interior_cavity(profiles.interior_cavity_profile)
@@ -712,7 +742,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--curve-segments",
         type=int,
-        default=24,
+        default=36,
         help="Number of line segments used to flatten each Bezier segment.",
     )
     parser.add_argument(
@@ -721,18 +751,64 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Number of contour layers to use (defaults to all contours in the SVG).",
     )
+    parser.add_argument(
+        "--mapping-span",
+        type=float,
+        default=0.7,
+        help=(
+            "Fraction of contour mapping profile used from rim inward (0-1]. "
+            "Lower values pack layers closer together and usually preserve more waviness."
+        ),
+    )
+    parser.add_argument(
+        "--mapping-span-anchor",
+        choices=("center", "mid-rim", "rim"),
+        default="mid-rim",
+        help=(
+            "Which end of the mapping profile receives span compression. "
+            "'center' packs layers toward the bowl center, 'rim' packs toward the rim, "
+            "and 'mid-rim' anchors between those two."
+        ),
+    )
+    parser.add_argument(
+        "--rim-clearance",
+        type=float,
+        default=5.0,
+        help=(
+            "Minimum radial clearance from bowl rim used when clamping wave amplitude. "
+            "Higher values keep the outer ring farther from the rim."
+        ),
+    )
+    parser.add_argument(
+        "--inner-clearance",
+        type=float,
+        default=0.05,
+        help=(
+            "Minimum radial clearance from the inner pattern boundary used when clamping "
+            "wave amplitude. Lower values allow more waviness near the center."
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    cfg = BowlConfig()
+    if args.rim_clearance < 0.0:
+        raise ValueError("--rim-clearance must be >= 0.")
+    if args.inner_clearance < 0.0:
+        raise ValueError("--inner-clearance must be >= 0.")
+    cfg = BowlConfig(
+        rim_clearance=args.rim_clearance,
+        pattern_inner_clearance=args.inner_clearance,
+    )
     bowl = build_stepped_bowl(
         args.svg,
         cfg,
         profile_svg=args.profile_svg,
         curve_segments=args.curve_segments,
         contour_layers=args.contour_layers,
+        mapping_span=args.mapping_span,
+        mapping_span_anchor=args.mapping_span_anchor,
     )
     cq.exporters.export(bowl, str(args.output))
     print(f"Wrote STL: {args.output}")
